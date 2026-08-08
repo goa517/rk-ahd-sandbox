@@ -1,0 +1,14 @@
+[Unit]
+Description=Multi-cam preview daemon (camd)
+# raw 通道依赖 rkaiq 3A：ISP 无 params 会停帧
+After=network.target rkaiq_3A.service
+Wants=rkaiq_3A.service
+
+[Service]
+ExecStart=/opt/multi-cam-preview/camd -config /opt/multi-cam-preview/config.yaml
+Restart=always
+RestartSec=2
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target

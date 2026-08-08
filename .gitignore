@@ -1,5 +1,12 @@
-/resources/*.exe
-/resources/*.zip
-
-# Large files
+*.exe
+*.zip
+*.7z
+*.tar
+*.tar.gz
+*.tgz
 *.img
+
+camera_output/
+
+# repo tool SDK mirror
+references/lubancat3/.repo/

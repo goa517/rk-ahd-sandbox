@@ -1,0 +1,119 @@
+# camd 多路摄像头预览配置
+# type: raw（MIPI 直连 RAW 摄像头，经 ISP）/ ahd（XS9922B 虚拟通道，后续阶段）/ stitch（环视拼接，后续阶段）
+listen: ":8080"
+
+channels:
+  - id: cam1
+    name: "CAM1 · GC4653"
+    type: raw
+    device: /dev/video22
+    enabled: true
+    width: 1280
+    height: 720
+    fps: 30
+    bitrate_kbps: 2048
+    gop: 60
+    source_fps: 30
+    format: NV12
+
+  - id: cam3
+    name: "CAM3 · GC4653"
+    type: raw
+    device: /dev/video31
+    enabled: true
+    width: 1280
+    height: 720
+    fps: 30
+    bitrate_kbps: 2048
+    gop: 60
+    source_fps: 30
+    format: NV12
+
+  # --- CSI2 / CSI4 扩展位：接入摄像头并启用 overlay 后，填 device 并置 enabled: true ---
+  - id: csi2
+    name: "CSI2 · 预留"
+    type: raw
+    device: ""
+    enabled: false
+    width: 1280
+    height: 720
+    fps: 30
+    bitrate_kbps: 2048
+    gop: 60
+
+  - id: csi4
+    name: "CSI4 · 预留"
+    type: raw
+    device: ""
+    enabled: false
+    width: 1280
+    height: 720
+    fps: 30
+    bitrate_kbps: 2048
+    gop: 60
+
+  # --- AHD 通道（XS9922B @ CSI0，VC0~VC3）：驱动移植完成后填写实际节点 ---
+  - id: ahd0
+    name: "AHD 1"
+    type: ahd
+    device: ""
+    enabled: false
+    width: 1280
+    height: 720
+    fps: 25
+    bitrate_kbps: 2048
+    gop: 50
+    source_fps: 25
+    format: UYVY
+
+  - id: ahd1
+    name: "AHD 2"
+    type: ahd
+    device: ""
+    enabled: false
+    width: 1280
+    height: 720
+    fps: 25
+    bitrate_kbps: 2048
+    gop: 50
+    source_fps: 25
+    format: UYVY
+
+  - id: ahd2
+    name: "AHD 3"
+    type: ahd
+    device: ""
+    enabled: false
+    width: 1280
+    height: 720
+    fps: 25
+    bitrate_kbps: 2048
+    gop: 50
+    source_fps: 25
+    format: UYVY
+
+  - id: ahd3
+    name: "AHD 4"
+    type: ahd
+    device: ""
+    enabled: false
+    width: 1280
+    height: 720
+    fps: 25
+    bitrate_kbps: 2048
+    gop: 50
+    source_fps: 25
+    format: UYVY
+
+  # --- 环视拼接（后续阶段：RGA 鸟瞰合成 4 路 AHD） ---
+  - id: surround
+    name: "360° 环视"
+    type: stitch
+    device: ""
+    enabled: false
+    width: 1280
+    height: 720
+    fps: 25
+    bitrate_kbps: 3072
+    gop: 50
+    source_fps: 25

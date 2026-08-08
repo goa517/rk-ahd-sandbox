@@ -1,0 +1,12 @@
+{
+    "recommendations": [
+        "anthropic.claude-code",
+        "tencent-cloud.coding-copilot",
+        "vscode.cpptools",
+        "golang.Go",
+        "ms-python.python",
+        "python.vscode-pylance",
+        "ms-toolsai.jupyter",
+        "charliermarsh.ruff",
+    ]
+}

@@ -1,0 +1,15 @@
+{
+  "name": "Rockchip AHD Sandbox",
+  "build": {
+    "dockerfile": "Dockerfile"
+  },
+  "features": {
+		"ghcr.io/devcontainers/features/go:1": {
+			"version": "1.25",
+			"installGoTools": true
+		}
+  },
+  "runArgs": ["--privileged"],
+  "postStartCommand": "sudo mount -t binfmt_misc binfmt_misc /proc/sys/fs/binfmt_misc 2>/dev/null || true",
+  "remoteUser": "root"
+}
