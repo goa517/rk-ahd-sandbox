@@ -2,7 +2,7 @@
 # 构建并部署 camd 到开发板（板端原生构建，需要板上有 Go 工具链与 mpp/rga 开发包）
 set -euo pipefail
 
-BOARD="${BOARD:-root@192.168.3.173}"
+BOARD="${BOARD:-root@192.168.8.198}"
 SRC_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 REMOTE_SRC=/root/build/multi-cam-preview
 REMOTE_OPT=/opt/multi-cam-preview
@@ -29,4 +29,4 @@ ssh "$BOARD" "mkdir -p $REMOTE_OPT && \
   systemctl restart camd && \
   sleep 1 && systemctl --no-pager status camd | head -8"
 
-echo "==> 完成。访问 http://192.168.3.173:8080/"
+echo "==> 完成。访问 http://192.168.8.198:8080/"

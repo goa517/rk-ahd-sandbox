@@ -1,0 +1,160 @@
+// SPDX-License-Identifier: (GPL-2.0+ OR MIT)
+/*
+ * XS9922B 4-channel AHD-to-MIPI bridge on LubanCat-3 RK3576, CAM0 / MIPI CSI0.
+ *
+ * Topology (YUV422 goes straight to the CIF writer, no ISP, no VPSS):
+ *
+ *   xs9922 (I2C3, 4 virtual channels)
+ *     -> csi2_dcphy0 port@0  (4 data lanes, the only 4-lane connector, J14)
+ *     -> mipi0_csi2
+ *     -> rkcif_mipi_lvds (+ rkcif_mmu)  -> /dev/video* stream_cif_mipi_id0..id3
+ *
+ * The node does not exist in rk3576-lubancat-3-csi.dtsi, so it is created here
+ * instead of just being flipped to "okay" like the bundled sensors are.
+ */
+/dts-v1/;
+/plugin/;
+
+#include <dt-bindings/gpio/gpio.h>
+#include <dt-bindings/pinctrl/rockchip.h>
+
+/ {
+	fragment@0 {
+		target = <&i2c3>;
+
+		__overlay__ {
+			status = "okay";
+			#address-cells = <1>;
+			#size-cells = <0>;
+
+			/*
+			 * Board bring-up confirmed the module is strapped to
+			 * 0x31 (chip id 0x9922 read OK).  Note the chip only
+			 * answers full 16-bit register-address transactions, so
+			 * i2cdetect/i2cget can NOT see it - verify with:
+			 *   i2ctransfer -y 3 w2@0x31 0x40 0xf0 r1  # -> 0x99
+			 */
+			xs9922_0: xs9922-0@31 {
+				compatible = "xs9922";
+				status = "okay";
+				reg = <0x31>;
+
+				/*
+				 * CAM_MCLK (FPC pin 21) is not connected on the
+				 * CSI adapter board - the bridge runs off its own
+				 * 27MHz crystal.  The driver still requires an
+				 * "xvclk", so point it at the fixed-clock that
+				 * already describes 27MHz in the base dtsi;
+				 * clk_set_rate()/clk_get_rate() then agree with
+				 * XS9922_XVCLK_FREQ and nothing is gated.
+				 */
+				clocks = <&ext_cam0_27m_clk>;
+				clock-names = "xvclk";
+
+				/*
+				 * The adapter board needs CAM_PDN_L (FPC 20) and
+				 * CAM_REST (FPC 19) held high for as long as the
+				 * bridge is running, which is what the driver
+				 * does: it powers up once in probe() and never
+				 * powers down again (s_power is a no-op).
+				 *
+				 * CAM0_PWDN = GPIO1_D2, CAM0_RSTN = GPIO1_D3
+				 * (carrier board schematic page 11).
+				 */
+				power-gpios = <&gpio1 RK_PD2 GPIO_ACTIVE_HIGH>;
+				reset-gpios = <&gpio1 RK_PD3 GPIO_ACTIVE_HIGH>;
+
+				/*
+				 * All CAM0 rails (5V/3V3/1V8) are always-on fixed
+				 * regulators on this board, so no *-supply here.
+				 */
+
+				rockchip,camera-module-index = <0>;
+				rockchip,camera-module-facing = "back";
+				rockchip,camera-module-name = "XS9922B";
+				rockchip,camera-module-lens-name = "AHD-4CH";
+
+				port {
+					xs9922_out0: endpoint {
+						remote-endpoint = <&dcphy0_in_xs9922>;
+						data-lanes = <1 2 3 4>;
+					};
+				};
+			};
+		};
+	};
+
+	fragment@1 {
+		target = <&csi2_dcphy0>;
+
+		__overlay__ {
+			status = "okay";
+
+			ports {
+				#address-cells = <1>;
+				#size-cells = <0>;
+
+				port@0 {
+					reg = <0>;
+					#address-cells = <1>;
+					#size-cells = <0>;
+
+					/* endpoint@1..@8 are taken by the bundled sensors */
+					dcphy0_in_xs9922: endpoint@9 {
+						reg = <9>;
+						remote-endpoint = <&xs9922_out0>;
+						data-lanes = <1 2 3 4>;
+					};
+				};
+			};
+		};
+	};
+
+	fragment@2 {
+		target = <&mipi0_csi2>;
+
+		__overlay__ {
+			status = "okay";
+		};
+	};
+
+	fragment@3 {
+		target = <&rkcif>;
+
+		__overlay__ {
+			status = "okay";
+		};
+	};
+
+	/*
+	 * No "rockchip,cif-monitor" here on purpose: kernel 6.1.99 declares the
+	 * property name (drivers/media/platform/rockchip/cif/dev.h) but never
+	 * parses it.  rkcif_init_reset_monitor() takes the monitor parameters
+	 * from CONFIG_ROCKCHIP_CIF_USE_MONITOR & friends, and
+	 * lubancat_linux_rk3576_defconfig leaves those unset, so the reset
+	 * watchdog is RKCIF_MONITOR_MODE_IDLE and the driver's
+	 * RKMODULE_GET_VICAP_RST_INFO hook is never queried.  Turning it on
+	 * means rebuilding the (built-in) rkcif driver - see docs/xs9922b_port.md.
+	 */
+	fragment@4 {
+		target = <&rkcif_mipi_lvds>;
+
+		__overlay__ {
+			status = "okay";
+		};
+	};
+
+	fragment@5 {
+		target = <&rkcif_mmu>;
+
+		__overlay__ {
+			status = "okay";
+		};
+	};
+
+	/*
+	 * Deliberately left disabled: rkcif_mipi_lvds_sditf, rkisp*, rkvpss*.
+	 * The bridge outputs UYVY8_2X8 which rkcif can write out directly, so
+	 * the single ISP instance stays free for the GC4653 pipelines.
+	 */
+};

@@ -509,14 +509,15 @@ func NewManager(cfg *config.Config) *Manager {
 	return m
 }
 
-// Start 启动所有可运行通道（raw 类型 + enabled + 设备存在）。
+// Start 启动所有可运行通道（raw/ahd 类型 + enabled + 设备存在）。
+// ahd 通道（XS9922B 经 rkcif 直出 NV12/UYVY）与 raw 走同一条 V4L2 采集管线。
 func (m *Manager) Start() {
 	for _, ch := range m.channels {
 		cfg := ch.snapshot()
 		if !cfg.Enabled {
 			continue
 		}
-		if cfg.Type != "raw" {
+		if cfg.Type != "raw" && cfg.Type != "ahd" {
 			slog.Info("通道类型本期保留不实例化", "id", cfg.ID, "type", cfg.Type)
 			continue
 		}
@@ -555,7 +556,7 @@ func (m *Manager) Update(id string, p ParamUpdate) (Info, error) {
 		return Info{}, fmt.Errorf("通道不存在: %s", id)
 	}
 	cfg := ch.snapshot()
-	if cfg.Type != "raw" {
+	if cfg.Type != "raw" && cfg.Type != "ahd" {
 		return ch.Info(), fmt.Errorf("通道类型 %s 暂不支持参数调整", cfg.Type)
 	}
 

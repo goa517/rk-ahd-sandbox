@@ -3,10 +3,12 @@
 listen: ":8080"
 
 channels:
+  # device 统一用 /dev/v4l/by-path/ 稳定符号链接：启用 CAM0(xs9922b) overlay 后
+  # rkcif_mipi_lvds 会注册 11 个 stream 节点，/dev/videoN 编号整体偏移，硬编码编号会失配
   - id: cam1
     name: "CAM1 · GC4653"
     type: raw
-    device: /dev/video22
+    device: /dev/v4l/by-path/platform-rkisp-vir1-video-index0
     enabled: true
     width: 1280
     height: 720
@@ -19,7 +21,7 @@ channels:
   - id: cam3
     name: "CAM3 · GC4653"
     type: raw
-    device: /dev/video31
+    device: /dev/v4l/by-path/platform-rkisp-vir3-video-index0
     enabled: true
     width: 1280
     height: 720
@@ -52,58 +54,58 @@ channels:
     bitrate_kbps: 2048
     gop: 60
 
-  # --- AHD 通道（XS9922B @ CSI0，VC0~VC3）：驱动移植完成后填写实际节点 ---
+  # --- AHD 通道（XS9922B @ CSI0，VC0~VC3）：rkcif 直出 NV12，内置 scaler 缩到 720p ---
   - id: ahd0
     name: "AHD 1"
     type: ahd
-    device: ""
-    enabled: false
+    device: /dev/v4l/by-path/platform-rkcif-mipi-lvds-video-index0
+    enabled: true
     width: 1280
     height: 720
     fps: 25
     bitrate_kbps: 2048
     gop: 50
     source_fps: 25
-    format: UYVY
+    format: NV12
 
   - id: ahd1
     name: "AHD 2"
     type: ahd
-    device: ""
-    enabled: false
+    device: /dev/v4l/by-path/platform-rkcif-mipi-lvds-video-index1
+    enabled: true
     width: 1280
     height: 720
     fps: 25
     bitrate_kbps: 2048
     gop: 50
     source_fps: 25
-    format: UYVY
+    format: NV12
 
   - id: ahd2
     name: "AHD 3"
     type: ahd
-    device: ""
-    enabled: false
+    device: /dev/v4l/by-path/platform-rkcif-mipi-lvds-video-index2
+    enabled: true
     width: 1280
     height: 720
     fps: 25
     bitrate_kbps: 2048
     gop: 50
     source_fps: 25
-    format: UYVY
+    format: NV12
 
   - id: ahd3
     name: "AHD 4"
     type: ahd
-    device: ""
-    enabled: false
+    device: /dev/v4l/by-path/platform-rkcif-mipi-lvds-video-index3
+    enabled: true
     width: 1280
     height: 720
     fps: 25
     bitrate_kbps: 2048
     gop: 50
     source_fps: 25
-    format: UYVY
+    format: NV12
 
   # --- 环视拼接（后续阶段：RGA 鸟瞰合成 4 路 AHD） ---
   - id: surround

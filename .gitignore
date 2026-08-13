@@ -10,3 +10,9 @@ camera_output/
 
 # repo tool SDK mirror
 references/lubancat3/.repo/
+
+# 内核工作树（由 kernel/scripts/prepare_tree.sh 检出）
+references/lubancat3/kernel-6.1/
+
+# 内核构建产物
+kernel/out/

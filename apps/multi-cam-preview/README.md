@@ -41,7 +41,7 @@ listen: ":8080"
 channels:
   - id: cam1
     name: "CAM1 · GC4653"
-    type: raw            # raw=ISP 通路 / ahd=XS9922B（后续）/ stitch=环视（后续）
+    type: raw            # raw=ISP 通路 / ahd=XS9922B（驱动已就绪，通道待接入）/ stitch=环视（后续）
     device: /dev/video22
     enabled: true
     width: 1280
@@ -95,7 +95,12 @@ CSI2/CSI4 扩展：接入摄像头并启用对应 overlay 后，将 `csi2`/`csi4
 - ffmpeg v4l2 indev 读 ISP 连续流会 EOF 卡死——本应用自研采集已规避；采集缓冲固定 16（vb2 队列耗尽会导致 rkisp 静默停帧）
 - 单 ISP 硬件时分复用：4 路 RAW 满规格（2560×1440@30）吞吐不足，需降 mode/降帧率
 - 双核 rkvenc 总吞吐约 4K@60：8 路全 1080p30 不可行，默认低分辨率 + API 按需提升
-- 后续阶段：XS9922B 驱动移植 + 4 路 AHD 接入（待厂商 30fps 寄存器配置）；RGA 简单鸟瞰环视拼接流
+- XS9922B（4 路 AHD → MIPI CSI0）**驱动侧已完成移植**（`kernel/`，交叉编译 + 离线设备树合并
+  校验通过，待上板验证），见 [docs/xs9922b_port.md](../../docs/xs9922b_port.md)。4 路走 rkcif
+  直出 NV12（VC0~VC3 → `stream_cif_mipi_id0..id3`），**不占用 ISP**，因此与现有 2 路 GC4653 的
+  ISP 通路可并行。上板验证通过后再加 `type: ahd` 通道配置；1080p@30fps 待厂商寄存器表，
+  当前只有 25fps
+- 后续阶段：RGA 简单鸟瞰环视拼接流
 
 ## 目录结构
 

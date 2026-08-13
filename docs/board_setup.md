@@ -6,7 +6,7 @@
 
 - 型号：鲁班猫3，SoC RK3576（8 核，内存 3.8GB）
 - 系统：厂家 Ubuntu 22.04 镜像，内核 6.1.99-rk3576（Rockchip BSP）
-- 访问：`ssh root@192.168.3.173`（免密）
+- 访问：`ssh root@192.168.8.198`（免密）
 
 ## 摄像头配置（U-Boot overlay）
 
@@ -33,9 +33,30 @@ dtoverlay=/dtb/overlay/rk3576-lubancat-3-cam3-gc4653-2560x1440-30fps-overlay.dtb
 | 3A 统计（供 rkaiq） | /dev/video28,29 | /dev/video37,38 |
 | rkvpss 缩放 | /dev/video41-44 (media4) | /dev/video45-48 (media5) |
 
+> **注意：上表是仅启用 CAM1/CAM3 overlay 时的编号。** 启用 CAM0（xs9922b）overlay 后，
+> `rkcif_mipi_lvds` 即使传感器未接也会注册 11 个 stream 节点（video0-10），其余节点整体偏移
+> （如 ISP mainpath 变为 CAM1=/dev/video33、CAM3=/dev/video42，media 号同样后移）。
+> 应用层应使用 udev 生成的稳定符号链接，如
+> `/dev/v4l/by-path/platform-rkisp-vir1-video-index0`（CAM1 ISP mainpath）、
+> `...-rkisp-vir3-video-index0`（CAM3）、`...-rkcif-mipi-lvds-video-index0..3`（XS9922B 4 路）。
+
 - 传感器实体：CAM1 为 `m01_b_gc4653 4-0029`（I2C4 @0x29），media 链路已默认 ENABLED
 - GC4653 是 RAW sensor，rkcif 直通节点输出 SGRBG10 RAW，需经 ISP 才能得到 YUV
 - `rkaiq_3A_server` 已在运行，ISP 输出色彩/曝光正常
+
+## CAM0 / XS9922B（4 路 AHD，已上板验证通过 2026-08-13）
+
+CAM0 是底板 5 个 MIPI CSI 口中唯一的 4-lane 口，接 **XS9922B 4 路 AHD 转 MIPI 转接板**（经一块自研 MIPI CSI 转接板，供 1.8V/5V 并做 3.3V→1.8V 电平转换）。4 路已全部出图并接入 camd 预览。
+
+- 驱动：`kernel/src/drivers/media/i2c/xs9922.c`，**内建于内核**（`CONFIG_VIDEO_XS9922=y`，必须内建，原因见 xs9922b_port.md §8）；当前 `/boot/Image` 指向 `Image-6.1.99-rk3576-builtin`，原厂 Image 保留可回退
+- overlay：`rk3576-lubancat-3-cam0-xs9922b-1920x1080-25fps-overlay.dtbo`（uEnv 已启用）
+- 控制通道：**I2C3 @0x31**（模组 strap 地址；注意该芯片只响应 16 位寄存器地址事务，`i2cdetect`/`i2cget` 扫不到，验证用 `i2ctransfer -y 3 w2@0x31 0x40 0xf0 r1` → 0x99）；CAM0_PWDN = GPIO1_D2、CAM0_RSTN = GPIO1_D3，probe 成功后持续拉高
+- 数据通路：`XS9922B → csi2_dcphy0 → mipi0_csi2 → rkcif`，4 路走 VC0~VC3 → `/dev/v4l/by-path/platform-rkcif-mipi-lvds-video-index0..3`。AHD 出来就是 UYVY8_2X8，**rkcif 直出 NV12，不经 ISP/VPSS**，不占用单实例 ISP，与 CAM1/CAM3 的 GC4653 ISP 通路互不影响；rkcif 内置 scaler 可直接出 720p
+- 默认模式 1080p@25fps；另支持 720p25 / CVBS PAL / CVBS NTSC。1080p@30fps 寄存器表待厂商提供
+- 热插拔状态：`cat /sys/bus/i2c/devices/3-0031/hotplug_status`（4 位掩码）；注意本内核 `CONFIG_ROCKCHIP_CIF_USE_MONITOR` 未开，掉线后 rkcif **不会**自动复位管线，camd 侧靠采集超时重建管线
+- 硬件要点：转接板到 XS9922B 模组的 **26pin FPC 必须反向连接**（转接板 pin N ↔ 模组 pin 27−N）；/boot 分区仅 124MB，放不下两份 42MB Image
+
+部署与上板 bring-up 步骤见 [kernel/README.md](../kernel/README.md) 与 [docs/xs9922b_port.md](xs9922b_port.md)。
 
 ## 环境依赖安装
 
