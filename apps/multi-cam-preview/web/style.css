@@ -24,6 +24,8 @@ body { display: flex; flex-direction: column; }
 
 .muted { color: var(--muted); }
 .stat { font-variant-numeric: tabular-nums; color: var(--muted); }
+/* 定宽数字槽：数值位数变化不引起整行抖动 */
+.stat .num { display: inline-block; min-width: 5.5ch; text-align: right; }
 
 /* ---- 顶部状态栏 ---- */
 #topbar {

@@ -57,6 +57,24 @@ func (en *Encoder) AddBuffer(slot, dmabufFD, size int) error {
 	return nil
 }
 
+// AllocInput 由 mpp 内部分配 n 个输入槽位（内部 group 分配，rkvenc 兼容性有保证），
+// 返回各槽位 dma-buf fd，供 RGA 等外部生产者写入（如 stitch 画布）。
+func (en *Encoder) AllocInput(n, size int) ([]int, error) {
+	en.mu.Lock()
+	defer en.mu.Unlock()
+	// 注意：C.int 是 32 位，不能直接写 []int（64 位）的底层数组
+	cfds := make([]C.int, n)
+	if rc := C.mppenc_alloc_input(en.e, C.int(n), C.int(size),
+		&cfds[0]); rc != 0 {
+		return nil, errors.New("mpp 内部输入 buffer 分配失败")
+	}
+	fds := make([]int, n)
+	for i, fd := range cfds {
+		fds[i] = int(fd)
+	}
+	return fds, nil
+}
+
 // Encode 编码一帧，返回 Annex-B 访问单元（含 IDR 前的 VPS/SPS/PPS）及该 AU
 // 对应输入帧的 pts（编码器可能有流水线延迟，AU 不一定对应当次输入）。
 func (en *Encoder) Encode(slot int, pts int64) ([]byte, int64, error) {

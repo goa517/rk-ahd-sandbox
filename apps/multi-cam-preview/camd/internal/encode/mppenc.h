@@ -13,6 +13,10 @@ mppenc_t *mppenc_create(int width, int height, int hor_stride, int ver_stride,
                         int fmt, int fps, int bps, int gop, char *err, int err_len);
 /* 将一路 dma-buf 导入为编码器输入帧槽位（每个 V4L2 buffer 调用一次）。返回 0 或 -1 */
 int mppenc_add_buffer(mppenc_t *e, int slot, int dmabuf_fd, int size);
+/* 由 mpp 内部分配 n 个输入槽位（内部 group 分配，保证 rkvenc 兼容），
+ * 供 RGA 等外部生产者写入。fds 输出各槽位 dma-buf fd（会话期间有效）。
+ * 返回 0 或 -1 */
+int mppenc_alloc_input(mppenc_t *e, int nslots, int size, int *fds);
 /* 编码某槽位的帧（阻塞至拿到输出包）。
    返回 0 且有输出（*out_len>0），1 无输出，<0 错误。输出指针在下一次调用前有效。
    有输出时 *out_pts 为该码流包对应输入帧的 pts（编码器内部可能有流水线延迟，

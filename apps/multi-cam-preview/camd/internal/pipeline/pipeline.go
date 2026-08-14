@@ -98,12 +98,32 @@ func (h *Hub) Viewers() int {
 	return len(h.subs)
 }
 
-// Channel 为一路摄像头通道。
+// RawFrame 为 stitch 等派生通道 tap 的采集原始帧（dma-buf 槽位引用）。
+// 引用计数归零时自动归还 V4L2 队列；持有方用完必须恰好调用一次 Release。
+type RawFrame struct {
+	Slot   int
+	WallUs int64
+	cap    *capture.Capture
+	refs   *int32
+}
+
+// FD 返回该帧 dma-buf fd（采集会话期间有效）。
+func (f RawFrame) FD() int { return f.cap.DMAFD(f.Slot) }
+
+// Release 释放一份引用；归零时 QBUF 归还采集队列。
+func (f RawFrame) Release() {
+	if atomic.AddInt32(f.refs, -1) == 0 {
+		_ = f.cap.Done(f.Slot)
+	}
+}
+
+// Channel 为一路摄像头通道（raw/ahd 为 V4L2 采集通道，stitch 为 RGA 拼接派生通道）。
 type Channel struct {
 	cfgMu sync.RWMutex
 	cfg   config.Channel
 
 	hub *Hub
+	mgr *Manager // stitch 通道解析拼接源用
 
 	opMu        sync.Mutex // 保护 start/stop/SetRC 与 cap/enc 指针
 	running     atomic.Bool
@@ -114,6 +134,10 @@ type Channel struct {
 
 	cap *capture.Capture
 	enc *encode.Encoder
+	stc *stitchState // 仅 stitch 通道
+
+	rawMu   sync.Mutex
+	rawSubs []chan RawFrame // 原始帧订阅者（stitch 通道）
 
 	frames  atomic.Uint64
 	bytes   atomic.Uint64
@@ -165,6 +189,69 @@ func (ch *Channel) setErr(err error) {
 	}
 }
 
+// SubscribeRaw 订阅本通道采集的原始帧（stitch 派生通道用）。
+// 返回容量 1 的队列，只保留最新帧；满时最旧帧被自动 Release 顶掉。
+func (ch *Channel) SubscribeRaw() chan RawFrame {
+	q := make(chan RawFrame, 1)
+	ch.rawMu.Lock()
+	ch.rawSubs = append(ch.rawSubs, q)
+	ch.rawMu.Unlock()
+	return q
+}
+
+// UnsubscribeRaw 退订并释放队列中滞留的帧。
+func (ch *Channel) UnsubscribeRaw(q chan RawFrame) {
+	ch.rawMu.Lock()
+	for i, s := range ch.rawSubs {
+		if s == q {
+			ch.rawSubs = append(ch.rawSubs[:i], ch.rawSubs[i+1:]...)
+			break
+		}
+	}
+	ch.rawMu.Unlock()
+	for {
+		select {
+		case f := <-q:
+			f.Release()
+		default:
+			return
+		}
+	}
+}
+
+// dispatchRaw 把当前帧分发给原始帧订阅者。返回 true 表示已移交归还责任
+//（引用计数归零时自动 Done）；无订阅者时返回 false，调用方自行 Done。
+func (ch *Channel) dispatchRaw(slot int, wallUs int64) bool {
+	ch.rawMu.Lock()
+	subs := append([]chan RawFrame(nil), ch.rawSubs...)
+	ch.rawMu.Unlock()
+	if len(subs) == 0 {
+		return false
+	}
+	refs := new(int32)
+	*refs = 1 // 生产者兜底引用，保证无投递成功时帧仍被归还
+	f := RawFrame{Slot: slot, WallUs: wallUs, cap: ch.cap, refs: refs}
+	for _, q := range subs {
+		atomic.AddInt32(refs, 1) // 先预占再投递，规避接收方提前 Release 的竞态
+		select {
+		case q <- f:
+		default:
+			select {
+			case old := <-q:
+				old.Release()
+			default:
+			}
+			select {
+			case q <- f:
+			default:
+				atomic.AddInt32(refs, -1) // 投递失败，取消预占
+			}
+		}
+	}
+	f.Release()
+	return true
+}
+
 // Start 启动通道监督 goroutine（自动重试/重建）。
 func (ch *Channel) Start() {
 	if !ch.running.CompareAndSwap(false, true) {
@@ -182,11 +269,18 @@ func (ch *Channel) Stop() {
 }
 
 func (ch *Channel) supervise() {
+	isStitch := ch.snapshot().Type == "stitch"
 	for ch.running.Load() {
-		if err := ch.startPipeline(); err != nil {
-			ch.setErr(err)
+		var startErr error
+		if isStitch {
+			startErr = ch.startStitchPipeline()
+		} else {
+			startErr = ch.startPipeline()
+		}
+		if startErr != nil {
+			ch.setErr(startErr)
 			ch.online.Store(false)
-			slog.Warn("管线启动失败，稍后重试", "id", ch.ID(), "err", err)
+			slog.Warn("管线启动失败，稍后重试", "id", ch.ID(), "err", startErr)
 			select {
 			case <-time.After(retryStartDelay):
 				continue
@@ -200,7 +294,12 @@ func (ch *Channel) supervise() {
 			"size", fmt.Sprintf("%dx%d@%d", cfg.Width, cfg.Height, cfg.FPS),
 			"bitrate_kbps", cfg.BitrateKbps)
 
-		err := ch.loop()
+		var err error
+		if isStitch {
+			err = ch.stitchLoop()
+		} else {
+			err = ch.loop()
+		}
 		ch.online.Store(false)
 		ch.stopPipeline()
 
@@ -276,6 +375,13 @@ func (ch *Channel) stopPipeline() {
 	if ch.cap != nil {
 		ch.cap.Close()
 		ch.cap = nil
+	}
+	if ch.stc != nil {
+		for _, s := range ch.stc.srcs {
+			s.ch.UnsubscribeRaw(s.q) // 退订并释放滞留帧
+		}
+		ch.stc.canvas.Free()
+		ch.stc = nil
 	}
 }
 
@@ -353,8 +459,11 @@ func (ch *Channel) loop() error {
 		}
 		frameIdx++
 
-		if err := ch.cap.Done(slot); err != nil {
-			return err
+		// 有原始帧订阅者（stitch）时移交归还责任，否则立即归还采集队列
+		if !ch.dispatchRaw(slot, wallUs) {
+			if err := ch.cap.Done(slot); err != nil {
+				return err
+			}
 		}
 	}
 }
@@ -503,13 +612,15 @@ func NewManager(cfg *config.Config) *Manager {
 	m := &Manager{cfg: cfg, byID: make(map[string]*Channel)}
 	for _, c := range cfg.Channels {
 		ch := NewChannel(c)
+		ch.mgr = m
 		m.channels = append(m.channels, ch)
 		m.byID[c.ID] = ch
 	}
 	return m
 }
 
-// Start 启动所有可运行通道（raw/ahd 类型 + enabled + 设备存在）。
+// Start 启动所有可运行通道。先启动 raw/ahd 采集通道（设备存在），
+// 再启动 stitch 派生通道（其源未上线时由监督循环等待重试，不阻塞启动）。
 // ahd 通道（XS9922B 经 rkcif 直出 NV12/UYVY）与 raw 走同一条 V4L2 采集管线。
 func (m *Manager) Start() {
 	for _, ch := range m.channels {
@@ -518,7 +629,6 @@ func (m *Manager) Start() {
 			continue
 		}
 		if cfg.Type != "raw" && cfg.Type != "ahd" {
-			slog.Info("通道类型本期保留不实例化", "id", cfg.ID, "type", cfg.Type)
 			continue
 		}
 		if cfg.Device == "" {
@@ -527,6 +637,18 @@ func (m *Manager) Start() {
 		if _, err := os.Stat(cfg.Device); err != nil {
 			slog.Warn("设备节点不存在，通道离线", "id", cfg.ID, "device", cfg.Device)
 			ch.setErr(fmt.Errorf("设备不存在: %s", cfg.Device))
+			continue
+		}
+		ch.Start()
+	}
+	for _, ch := range m.channels {
+		cfg := ch.snapshot()
+		if !cfg.Enabled || cfg.Type != "stitch" {
+			continue
+		}
+		if len(cfg.Sources) == 0 {
+			slog.Warn("stitch 通道未配置 sources，通道离线", "id", cfg.ID)
+			ch.setErr(fmt.Errorf("未配置拼接源"))
 			continue
 		}
 		ch.Start()
@@ -556,7 +678,7 @@ func (m *Manager) Update(id string, p ParamUpdate) (Info, error) {
 		return Info{}, fmt.Errorf("通道不存在: %s", id)
 	}
 	cfg := ch.snapshot()
-	if cfg.Type != "raw" && cfg.Type != "ahd" {
+	if cfg.Type != "raw" && cfg.Type != "ahd" && cfg.Type != "stitch" {
 		return ch.Info(), fmt.Errorf("通道类型 %s 暂不支持参数调整", cfg.Type)
 	}
 

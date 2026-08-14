@@ -30,6 +30,9 @@ type Server struct {
 	platform string
 	cpuModel string
 	prevCPU  cpuTimes
+
+	prevNetAt time.Time
+	prevNet   netBytes
 }
 
 type samplePoint struct {
@@ -51,6 +54,8 @@ func NewServer(mgr *pipeline.Manager, cfg *config.Config) (*Server, error) {
 		platform:   readPlatform(),
 		cpuModel:   readCPUModel(),
 		prevCPU:    readCPUTimes(),
+		prevNetAt:  time.Now(),
+		prevNet:    readNetBytes(),
 	}, nil
 }
 
@@ -193,6 +198,17 @@ func (s *Server) collectStats() Stats {
 		TempC:      readTempC(),
 	}
 	s.prevCPU = curCPU
+
+	curNet := readNetBytes()
+	if dt := now.Sub(s.prevNetAt).Seconds(); dt > 0 {
+		if curNet.rx >= s.prevNet.rx {
+			st.System.NetRxKbps = float64(curNet.rx-s.prevNet.rx) * 8 / 1000 / dt
+		}
+		if curNet.tx >= s.prevNet.tx {
+			st.System.NetTxKbps = float64(curNet.tx-s.prevNet.tx) * 8 / 1000 / dt
+		}
+	}
+	s.prevNet, s.prevNetAt = curNet, now
 	return st
 }
 

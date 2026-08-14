@@ -10,10 +10,10 @@ channels:
     type: raw
     device: /dev/v4l/by-path/platform-rkisp-vir1-video-index0
     enabled: true
-    width: 1280
-    height: 720
+    width: 2560
+    height: 1440
     fps: 30
-    bitrate_kbps: 2048
+    bitrate_kbps: 8192
     gop: 60
     source_fps: 30
     format: NV12
@@ -23,10 +23,10 @@ channels:
     type: raw
     device: /dev/v4l/by-path/platform-rkisp-vir3-video-index0
     enabled: true
-    width: 1280
-    height: 720
+    width: 2560
+    height: 1440
     fps: 30
-    bitrate_kbps: 2048
+    bitrate_kbps: 8192
     gop: 60
     source_fps: 30
     format: NV12
@@ -60,10 +60,10 @@ channels:
     type: ahd
     device: /dev/v4l/by-path/platform-rkcif-mipi-lvds-video-index0
     enabled: true
-    width: 1280
-    height: 720
+    width: 1920
+    height: 1080
     fps: 25
-    bitrate_kbps: 2048
+    bitrate_kbps: 5120
     gop: 50
     source_fps: 25
     format: NV12
@@ -73,10 +73,10 @@ channels:
     type: ahd
     device: /dev/v4l/by-path/platform-rkcif-mipi-lvds-video-index1
     enabled: true
-    width: 1280
-    height: 720
+    width: 1920
+    height: 1080
     fps: 25
-    bitrate_kbps: 2048
+    bitrate_kbps: 5120
     gop: 50
     source_fps: 25
     format: NV12
@@ -86,10 +86,10 @@ channels:
     type: ahd
     device: /dev/v4l/by-path/platform-rkcif-mipi-lvds-video-index2
     enabled: true
-    width: 1280
-    height: 720
+    width: 1920
+    height: 1080
     fps: 25
-    bitrate_kbps: 2048
+    bitrate_kbps: 5120
     gop: 50
     source_fps: 25
     format: NV12
@@ -99,23 +99,32 @@ channels:
     type: ahd
     device: /dev/v4l/by-path/platform-rkcif-mipi-lvds-video-index3
     enabled: true
-    width: 1280
-    height: 720
+    width: 1920
+    height: 1080
     fps: 25
-    bitrate_kbps: 2048
+    bitrate_kbps: 5120
     gop: 50
     source_fps: 25
     format: NV12
 
-  # --- 环视拼接（后续阶段：RGA 鸟瞰合成 4 路 AHD） ---
+  # --- 环视拼接（RGA 合成 4 路 AHD → 第 7 路 H.265 流） ---
+  # 从 ahd0~3 tap 原始帧（dma-buf 零拷贝），RGA 逐源 裁剪/旋转/缩放 blit 到画布后硬编。
+  # layout 与 sources 一一对应：x,y,w,h 为画布目标区域；rotate 顺时针 0/90/180/270；
+  # crop 可选 [x,y,w,h] 源图裁剪。手工调整，不做标定。默认 2x2 宫格。
   - id: surround
     name: "360° 环视"
     type: stitch
     device: ""
-    enabled: false
-    width: 1280
-    height: 720
+    enabled: true
+    width: 1920
+    height: 1080
     fps: 25
-    bitrate_kbps: 3072
+    bitrate_kbps: 8192
     gop: 50
     source_fps: 25
+    sources: [ahd0, ahd1, ahd2, ahd3]
+    layout:
+      - { x: 0,   y: 0,   w: 960, h: 540, rotate: 0 }
+      - { x: 960, y: 0,   w: 960, h: 540, rotate: 0 }
+      - { x: 0,   y: 540, w: 960, h: 540, rotate: 0 }
+      - { x: 960, y: 540, w: 960, h: 540, rotate: 0 }

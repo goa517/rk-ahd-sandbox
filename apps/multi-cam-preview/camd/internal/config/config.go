@@ -21,6 +21,20 @@ type Channel struct {
 	GOP         int    `yaml:"gop"`
 	SourceFPS   int    `yaml:"source_fps"` // 采集源帧率（sensor/解码器输出）
 	Format      string `yaml:"format"`     // NV12 / UYVY
+
+	// 以下仅 type=stitch（环视拼接）使用：从 sources 通道 tap 原始帧，RGA 合成到画布
+	Sources []string     `yaml:"sources"` // 源通道 id 列表
+	Layout  []LayoutTile `yaml:"layout"`  // 每个源在画布上的放置（与 sources 一一对应）
+}
+
+// LayoutTile 描述一路源画面在拼接画布上的目标区域与变换。
+type LayoutTile struct {
+	X      int   `yaml:"x"`
+	Y      int   `yaml:"y"`
+	W      int   `yaml:"w"`
+	H      int   `yaml:"h"`
+	Rotate int   `yaml:"rotate"` // 顺时针 0/90/180/270
+	Crop   []int `yaml:"crop"`   // 可选，源图裁剪 [x,y,w,h]，缺省整幅
 }
 
 type Config struct {

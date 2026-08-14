@@ -156,6 +156,10 @@ async function refreshChannels() {
   state.channels = await res.json();
   state.channels.forEach((ch, i) => {
     const l = layoutOf(ch.id);
+    // 拼接画面默认占更大格子（仅首次布局，用户可拖拽覆盖）
+    if (ch.type === "stitch" && l.order === 99 && l.col === 4 && l.row === 1) {
+      l.col = 6; l.row = 2;
+    }
     if (l.order === 99) l.order = i;
   });
 }
@@ -434,6 +438,8 @@ function connectStats() {
       const s = st.system;
       document.getElementById("sys-info").textContent =
         `${s.platform} · ${s.cpu} ${s.cores}核 · CPU ${s.cpu_pct.toFixed(0)}% · ${s.temp_c.toFixed(1)}°C · 内存 ${(s.mem_used_mb / 1024).toFixed(1)}/${(s.mem_total_mb / 1024).toFixed(1)}GB`;
+      document.getElementById("net-rx").textContent = (s.net_rx_kbps / 1000).toFixed(1);
+      document.getElementById("net-tx").textContent = (s.net_tx_kbps / 1000).toFixed(1);
     }
     state.stats = new Map(st.channels.map((c) => [c.id, c]));
     syncPanes();
@@ -548,12 +554,18 @@ function fillDetails(ch) {
     ["节点", ch.device],
     ["状态", ch.online ? "在线" : `离线${ch.last_error ? `（${ch.last_error}）` : ""}`],
   ];
-  const capRows = [
-    ["格式", ch.format ? `${ch.format}${ch.stride ? ` · stride ${ch.stride}` : ""}` : null],
-    ["源帧率", ch.source_fps ? `${ch.source_fps} fps` : null],
-    ["缓冲", ch.online ? "16 × dma-buf（零拷贝直送编码器）" : null],
-    ["采集时间戳", ch.online ? "ISP 出帧时刻（墙上时钟）" : null],
-  ];
+  const capRows = ch.type === "stitch"
+    ? [
+        ["拼接源", ch.online ? "4 路 AHD 原始帧 tap（dma-buf 零拷贝）" : null],
+        ["合成", ch.online ? "RGA 裁剪/旋转/缩放 → NV12 画布" : null],
+        ["源帧率", ch.source_fps ? `${ch.source_fps} fps` : null],
+      ]
+    : [
+        ["格式", ch.format ? `${ch.format}${ch.stride ? ` · stride ${ch.stride}` : ""}` : null],
+        ["源帧率", ch.source_fps ? `${ch.source_fps} fps` : null],
+        ["缓冲", ch.online ? "16 × dma-buf（零拷贝直送编码器）" : null],
+        ["采集时间戳", ch.online ? "ISP 出帧时刻（墙上时钟）" : null],
+      ];
   const encRows = [
     ["编码器", "rkvenc 硬件 H.265 · CBR"],
     ["输出", `${ch.width}×${ch.height}@${ch.fps} · ${(ch.bitrate_kbps / 1000).toFixed(1)} Mbps · GOP ${ch.gop}`],
@@ -584,7 +596,7 @@ function fillPanel() {
   const form = document.getElementById("panel-form");
   const empty = document.getElementById("panel-empty");
   fillDetails(ch);
-  if (!ch || !ch.online || ch.type !== "raw") {
+  if (!ch || !ch.online || (ch.type !== "raw" && ch.type !== "ahd" && ch.type !== "stitch")) {
     form.hidden = true;
     empty.hidden = false;
     empty.textContent = ch ? `「${ch.name}」离线或类型暂不支持调整` : "点击选择一个在线通道";
@@ -597,7 +609,10 @@ function fillPanel() {
 
   const resSel = document.getElementById("f-res");
   resSel.innerHTML = "";
+  // AHD 输入源最高 1080p，rkcif 无缩放器，超过输入会被驱动 clamp
+  const maxSrcW = ch.type === "ahd" ? 1920 : Infinity;
   for (const [w, h] of RESOLUTION_PRESETS) {
+    if (w > maxSrcW) continue;
     const opt = document.createElement("option");
     opt.value = `${w}x${h}`;
     opt.textContent = `${w} × ${h}`;
@@ -613,7 +628,7 @@ function fillPanel() {
   }
 
   const fps = document.getElementById("f-fps");
-  fps.max = 30;
+  fps.max = ch.source_fps || 30;
   fps.value = ch.fps;
   document.getElementById("f-fps-val").textContent = `${ch.fps} fps`;
 

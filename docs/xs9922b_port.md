@@ -200,9 +200,15 @@ rkcif 不会自动复位管线。`hotplug_status` sysfs 与 input 事件仍然�
    和 `i2cget`（单字节寄存器协议）全部 NACK——芯片活着也扫不到。正确的验证命令：
    `i2ctransfer -y 3 w2@0x31 0x40 0xf0 r1` → 返回 `0x99`。
 2. **转接板把 CAM0_PWDN/CAM0_RSTN 透传到 CAM_PDN_L/CAM_REST**：已验证（模组脚实测 1.8V）。
-3. **1080p@30fps 待补**：现有寄存器表只有 25fps。拿到厂商 `xs9922_1080p_4lanes_30fps[]` 后，
-   在 `supported_modes[]` 增加一项并把 `max_fps.denominator` 设为 `300000` 即可，无结构性改动
-   （驱动里已留 TODO 注释）。
+3. ~~**1080p@30fps 待补**~~ **已完成（2026-08-14，驱动 V0.01.02）**：拿到《XS9922B芯片用户
+   寄存器手册》后确认高清解码本身自动跟踪制式（`0xN10c` bit0=0 自动模式，`0xN10d` 手动值
+   无效），主机侧唯一与帧率相关的是 `0xNE12`（MIPI_FREE_RUN_STD）。驱动在热插拔线程中对
+   每个锁定通道读 `0xN001`（HD 制式回读：1080p25=0x?4、1080p30=0x?5），按检测结果回写
+   `0xNE12`（5→1080p25、6→1080p30），25/30fps 摄像头可混插，无需单独的 30fps 寄存器表。
+   `g_frame_interval` 按通道实测帧率上报；新增 `video_std` sysfs 查看每通道制式
+   （如 `ch0: ASTD 1920x1080@25 (0x44)`）。已上板验证：4 路 1080p25 识别正确；
+   free-run 强制 1080p30（`0x0e10=1, 0x0e12=6`）实测 30.00fps 出流。**接 30fps 摄像头后
+   camd 侧 `source_fps`/`fps` 需相应改为 30**（当前 YAML 仍是 25）。
 4. **MIPI 速率**：1.5Gbps/lane × 4lane 连续时钟（`0x511b = 0x78`）。RK3576 D-PHY 支持
    2.5Gbps/lane，余量充足；`V4L2_CID_LINK_FREQ` 报 750MHz（1.5G >> 1）。
 5. **不接入 ISP**：4 路 YUV422 由 rkcif 直接写出，不占用单实例 ISP，与现有 2 路 GC4653 的

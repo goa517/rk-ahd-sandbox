@@ -22,6 +22,8 @@
  *
  * V0.0X01.0X00 first version.
  * V0.0X01.0X01 port to LubanCat-3 (RK3576), MIPI CSI0 4-lane.
+ * V0.0X01.0X02 runtime HD standard adaptation (1080p30 support): the detect
+ *             thread mirrors 0xNE12 from the 0xN001 readback per channel.
  */
 
 #include <linux/clk.h>
@@ -47,7 +49,7 @@
 #include "xs9922_reg_cfg.h"
 #include "xs9922_audio_reg_cfg.h"
 
-#define DRIVER_VERSION			KERNEL_VERSION(0, 0x01, 0x01)
+#define DRIVER_VERSION			KERNEL_VERSION(0, 0x01, 0x02)
 
 #define XS9922_NAME			"xs9922"
 #define XS9922_XVCLK_FREQ		27000000
@@ -78,11 +80,13 @@
 
 #define XS9922_REG_VIDEO_STATUS		0x0000	/* bit4: video signal lost */
 #define XS9922_VIDEO_STATUS_LOST	BIT(4)
+#define XS9922_REG_HD_VSTD_READBACK	0x0001	/* detected HD standard */
 #define XS9922_REG_CONTRAST		0x0106
 #define XS9922_REG_BRIGHTNESS		0x0107
 #define XS9922_REG_SATURATION		0x0108
 #define XS9922_REG_HUE			0x0109
 #define XS9922_REG_CH_MIPI_EN		0x0e08	/* 1: channel drives the link */
+#define XS9922_REG_FREE_RUN_STD		0x0e12	/* must mirror the detected std */
 
 /* MIPI reset block, bit0 of 0x5007 releases the MIPI output */
 #define XS9922_REG_MIPI_RST0		0x5004
@@ -140,6 +144,9 @@ struct xs9922 {
 	unsigned char		detect_status;
 	unsigned char		last_detect_status;
 	u8			is_reset;
+	u8			ch_vstd[XS9922_CH_NUM];		/* 0xN001 readback, 0xff = none */
+	u8			ch_fps[XS9922_CH_NUM];		/* detected fps, 0 = unknown */
+	u8			ch_std_applied[XS9922_CH_NUM];	/* last written 0xNE12 */
 };
 
 static const s64 link_freq_items[] = {
@@ -155,10 +162,14 @@ static const s64 link_freq_items[] = {
  * to "vc = pad_id" because RKMODULE_GET_CHANNEL_INFO is not implemented here),
  * it is reported through fmt->reserved[0] for other BSP consumers.
  *
- * TODO: 1080p@30fps is missing.  The vendor register dump we have only covers
- * 25fps (xs9922_1080p_4lanes_25fps).  Once xs9922_1080p_4lanes_30fps[] is
- * available, add another entry here with .max_fps.denominator = 300000; no
- * structural change is needed.
+ *
+ * There is deliberately no separate 1080p30 table: the HD decoder tracks the
+ * incoming standard by itself (0xN10c bit0 = 0, auto), and the only
+ * frame-rate dependent register left to the host is 0xNE12
+ * (MIPI_FREE_RUN_STD), which the detect thread mirrors from the HD standard
+ * readback (0xN001) at runtime - see xs9922_adapt_channel().  25fps and
+ * 30fps cameras can therefore be mixed on the same link, and .max_fps is
+ * refined per channel by g_frame_interval().
  */
 static const struct xs9922_mode supported_modes[] = {
 	{
@@ -350,6 +361,9 @@ static int xs9922_switch_mode(struct xs9922 *xs9922)
 	if (ret)
 		dev_err(&client->dev, "failed to program mode registers\n");
 
+	/* the table just overwrote 0xNE12; let the detect thread re-adapt */
+	memset(xs9922->ch_std_applied, 0, sizeof(xs9922->ch_std_applied));
+
 	return ret;
 }
 
@@ -410,6 +424,93 @@ static int xs9922_auto_detect_hotplug(struct xs9922 *xs9922)
 	return 0;
 }
 
+/*
+ * Runtime standard adaptation (references/xs9922b/自适应制式.txt).
+ *
+ * The HD decoder locks onto the incoming standard by itself (0xN10c bit0 = 0,
+ * "auto", as programmed by every AHD mode table - 0xN10d is only honoured in
+ * manual mode).  What the host still has to keep in sync is 0xNE12
+ * (MIPI_FREE_RUN_STD): the vendor requires it to mirror the detected
+ * standard.  The detect thread calls xs9922_adapt_channel() for every locked
+ * channel, which reads the HD standard readback (0xN001) and rewrites 0xNE12
+ * on change, so 25fps/30fps (and 720p) cameras can be mixed freely.
+ */
+
+/* 0xN001 low 6 bits -> free-run std (0xNE12); 0 = not a known HD standard */
+static u8 xs9922_vstd_to_std(u8 vstd)
+{
+	switch (vstd & 0x3f) {
+	case 0x00 ... 0x03:	/* 720p 25/30/50/60 */
+		return (vstd & 0x3f) + 1;
+	case 0x04:		/* 1080p25 */
+		return 5;
+	case 0x05:		/* 1080p30 */
+		return 6;
+	default:
+		return 0;
+	}
+}
+
+/* 0xN001 low 6 bits -> fps; 0 = unknown */
+static u8 xs9922_vstd_to_fps(u8 vstd)
+{
+	static const u8 fps_lut[] = { 25, 30, 50, 60, 25, 30 };
+
+	if ((vstd & 0x3f) < ARRAY_SIZE(fps_lut))
+		return fps_lut[vstd & 0x3f];
+	return 0;
+}
+
+static void xs9922_adapt_channel(struct xs9922 *xs9922, unsigned int ch)
+{
+	struct i2c_client *client = xs9922->client;
+	bool is_1080;
+	u32 val;
+	u8 std, fps;
+	int ret;
+
+	ret = xs9922_read_reg(client,
+			      XS9922_CH_REG(ch, XS9922_REG_HD_VSTD_READBACK),
+			      XS9922_REG_VALUE_08BIT, &val);
+	if (ret)
+		return;
+
+	if ((u8)val == 0xff) {	/* no HD input on this channel */
+		xs9922->ch_vstd[ch] = 0xff;
+		xs9922->ch_fps[ch] = 0;
+		return;
+	}
+
+	/*
+	 * Only adapt within the resolution family of the active mode table:
+	 * 0xN001 formats 0x00..0x03 are 720p, 0x04..0x05 are 1080p.
+	 */
+	is_1080 = (val & 0x3f) >= 0x04;
+	if ((xs9922->cur_mode->height == 1080) != is_1080)
+		return;
+
+	std = xs9922_vstd_to_std(val);
+	fps = xs9922_vstd_to_fps(val);
+	if (!std)
+		return;
+
+	xs9922->ch_vstd[ch] = val;
+	xs9922->ch_fps[ch] = fps;
+
+	if (xs9922->ch_std_applied[ch] == std)
+		return;
+
+	ret = xs9922_write_reg(client,
+			       XS9922_CH_REG(ch, XS9922_REG_FREE_RUN_STD),
+			       XS9922_REG_VALUE_08BIT, std);
+	if (ret)
+		return;
+
+	xs9922->ch_std_applied[ch] = std;
+	dev_info(&client->dev, "channel %u: %ux%u@%u detected (readback 0x%02x)\n",
+		 ch, is_1080 ? 1920 : 1280, is_1080 ? 1080 : 720, fps, (u8)val);
+}
+
 static ssize_t hotplug_status_show(struct device *dev,
 				   struct device_attribute *attr, char *buf)
 {
@@ -443,12 +544,44 @@ static ssize_t cam_power_store(struct device *dev,
 	return count;
 }
 
+/* Per-channel detected standard (runtime), e.g. "ch0: CVI 1920x1080@30 (0x05)" */
+static ssize_t video_std_show(struct device *dev,
+			      struct device_attribute *attr, char *buf)
+{
+	static const char * const proto[] = { "CVI", "ASTD", "TSTD", "?" };
+	struct i2c_client *client = to_i2c_client(dev);
+	struct v4l2_subdev *sd = i2c_get_clientdata(client);
+	struct xs9922 *xs9922 = to_xs9922(sd);
+	ssize_t len = 0;
+	unsigned int ch;
+
+	for (ch = 0; ch < XS9922_CH_NUM; ch++) {
+		u8 v = xs9922->ch_vstd[ch];
+		bool is_1080 = (v & 0x3f) >= 0x04;
+
+		if (!(xs9922->detect_status & BIT(ch)) || v == 0xff ||
+		    !xs9922->ch_fps[ch])
+			len += sysfs_emit_at(buf, len, "ch%u: none\n", ch);
+		else
+			len += sysfs_emit_at(buf, len,
+					     "ch%u: %s %ux%u@%u (0x%02x)\n",
+					     ch, proto[v >> 6],
+					     is_1080 ? 1920 : 1280,
+					     is_1080 ? 1080 : 720,
+					     xs9922->ch_fps[ch], v);
+	}
+
+	return len;
+}
+
 static DEVICE_ATTR_RO(hotplug_status);
 static DEVICE_ATTR_WO(cam_power);
+static DEVICE_ATTR_RO(video_std);
 
 static struct attribute *dev_attrs[] = {
 	&dev_attr_hotplug_status.attr,
 	&dev_attr_cam_power.attr,
+	&dev_attr_video_std.attr,
 	NULL,
 };
 
@@ -632,6 +765,13 @@ static int xs9922_g_frame_interval(struct v4l2_subdev *sd,
 
 	mutex_lock(&xs9922->mutex);
 	fi->interval = xs9922->cur_mode->max_fps;
+	/* refine with the runtime detected standard of the queried channel */
+	if (fi->pad < PAD_MAX &&
+	    xs9922->ch_fps[xs9922->cur_mode->vc[fi->pad]]) {
+		fi->interval.numerator = 1;
+		fi->interval.denominator =
+			xs9922->ch_fps[xs9922->cur_mode->vc[fi->pad]];
+	}
 	mutex_unlock(&xs9922->mutex);
 
 	return 0;
@@ -829,7 +969,13 @@ static int detect_thread_function(void *data)
 
 	while (!kthread_should_stop()) {
 		if (xs9922->power_on) {
+			unsigned int ch;
+
 			xs9922_auto_detect_hotplug(xs9922);
+
+			for (ch = 0; ch < XS9922_CH_NUM; ch++)
+				if (xs9922->detect_status & BIT(ch))
+					xs9922_adapt_channel(xs9922, ch);
 
 			if (xs9922->last_detect_status != xs9922->detect_status) {
 				if (need_reset_wait < 0) {
@@ -1270,6 +1416,7 @@ static int xs9922_probe(struct i2c_client *client,
 	xs9922->client = client;
 	xs9922->cur_mode = &supported_modes[0];
 	xs9922->cfg_num = ARRAY_SIZE(supported_modes);
+	memset(xs9922->ch_vstd, 0xff, sizeof(xs9922->ch_vstd));
 
 	xs9922->xvclk = devm_clk_get(dev, "xvclk");
 	if (IS_ERR(xs9922->xvclk)) {

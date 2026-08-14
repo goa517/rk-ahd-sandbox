@@ -20,6 +20,7 @@ struct mppenc {
     MppCtx         ctx;
     MppApi        *mpi;
     MppEncCfg      cfg;
+    MppBufferGroup grp;      /* 内部分配槽位时的 buffer group */
     MppBuffer      buf[MPPENC_MAX_SLOTS];
     MppFrame       frame[MPPENC_MAX_SLOTS];
     int            nslots;
@@ -136,6 +137,37 @@ int mppenc_add_buffer(mppenc_t *e, int slot, int dmabuf_fd, int size) {
     return 0;
 }
 
+/* 初始化某槽位的 MppFrame（公共部分） */
+static int init_slot_frame(mppenc_t *e, int slot) {
+    if (mpp_frame_init(&e->frame[slot]) != MPP_OK)
+        return -1;
+    MppFrame f = e->frame[slot];
+    mpp_frame_set_width(f, e->width);
+    mpp_frame_set_height(f, e->height);
+    mpp_frame_set_hor_stride(f, e->hstride);
+    mpp_frame_set_ver_stride(f, e->vstride);
+    mpp_frame_set_fmt(f, e->fmt);
+    mpp_frame_set_buffer(f, e->buf[slot]);
+    if (slot + 1 > e->nslots)
+        e->nslots = slot + 1;
+    return 0;
+}
+
+int mppenc_alloc_input(mppenc_t *e, int nslots, int size, int *fds) {
+    if (!e || nslots <= 0 || nslots > MPPENC_MAX_SLOTS)
+        return -1;
+    if (!e->grp && mpp_buffer_group_get_internal(&e->grp, MPP_BUFFER_TYPE_DRM) != MPP_OK)
+        return -1;
+    for (int i = 0; i < nslots; i++) {
+        if (mpp_buffer_get(e->grp, &e->buf[i], size) != MPP_OK)
+            return -1;
+        fds[i] = mpp_buffer_get_fd(e->buf[i]);
+        if (fds[i] < 0 || init_slot_frame(e, i) != 0)
+            return -1;
+    }
+    return 0;
+}
+
 int mppenc_encode_slot(mppenc_t *e, int slot, int64_t pts,
                        uint8_t **out_data, int *out_len, int64_t *out_pts) {
     if (!e || slot < 0 || slot >= e->nslots)
@@ -204,6 +236,8 @@ void mppenc_destroy(mppenc_t *e) {
     }
     if (e->cfg)
         mpp_enc_cfg_deinit(e->cfg);
+    if (e->grp)
+        mpp_buffer_group_put(e->grp);
     if (e->ctx)
         mpp_destroy(e->ctx);
     free(e->out);

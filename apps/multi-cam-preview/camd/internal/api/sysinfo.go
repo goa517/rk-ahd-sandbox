@@ -16,6 +16,8 @@ type SysInfo struct {
 	MemUsedMB  int     `json:"mem_used_mb"`  // 已用内存（Total-Available）
 	MemTotalMB int     `json:"mem_total_mb"` // 总内存
 	TempC      float64 `json:"temp_c"`       // SoC 温度
+	NetRxKbps  float64 `json:"net_rx_kbps"`  // 网络接收吞吐（除 lo 外全部接口合计）
+	NetTxKbps  float64 `json:"net_tx_kbps"`  // 网络发送吞吐
 }
 
 func readPlatform() string {
@@ -136,4 +138,34 @@ func cpuPercent(prev, cur cpuTimes) float64 {
 		return 0
 	}
 	return float64(dt-di) / float64(dt) * 100
+}
+
+type netBytes struct{ rx, tx uint64 }
+
+// readNetBytes 汇总除 lo 外全部接口的累计收/发字节数（/proc/net/dev）。
+func readNetBytes() netBytes {
+	b, err := os.ReadFile("/proc/net/dev")
+	if err != nil {
+		return netBytes{}
+	}
+	var n netBytes
+	for _, l := range strings.Split(string(b), "\n") {
+		i := strings.Index(l, ":")
+		if i < 0 {
+			continue
+		}
+		iface := strings.TrimSpace(l[:i])
+		if iface == "" || iface == "lo" {
+			continue
+		}
+		f := strings.Fields(l[i+1:])
+		if len(f) < 9 {
+			continue
+		}
+		rx, _ := strconv.ParseUint(f[0], 10, 64)
+		tx, _ := strconv.ParseUint(f[8], 10, 64)
+		n.rx += rx
+		n.tx += tx
+	}
+	return n
 }
